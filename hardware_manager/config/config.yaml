@@ -1,0 +1,16 @@
+controller_limits:
+  kp_min: 0.0
+  kp_max: 40.0
+  kd_min: 0.0
+  kd_max: 5.0
+
+joint_limits:
+  hip:
+    min: -0.6
+    max: 0.6
+  thigh:
+    min: -2.6
+    max: 2.6
+  calf:
+    min: -3.7
+    max: 3.7
