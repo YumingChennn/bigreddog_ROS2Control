@@ -41,13 +41,13 @@ int main(int argc, const char **argv) {
     CAN_ptr = std::make_shared<Tangair_usb2can>();
     signal(SIGINT, signal_callback_handler);
 
-    constexpr int kDefaultDelayUs = 237;
+    constexpr int kDefaultDelayUs = 120;
 
     CAN_ptr->DDS_Init();
     CAN_ptr->IMU_Init();
     CAN_ptr->StartIMUThread();
     
-    CAN_ptr->LoadConfigFromYAML("/home/crazydogv2/test/reddog_ROS2Control/hardware_manager/config/config.yaml");
+    CAN_ptr->LoadConfigFromYAML("/home/crazydogv2/test/bigreddog_ROS2Control/hardware_manager/config/config.yaml");
 
 
     std::unordered_map<std::string, std::function<void()>> command_map = {

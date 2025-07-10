@@ -31,7 +31,7 @@ SensorData sensorData;
 
 /// @brief 构造函数，初始化
 /// @return
-Tangair_usb2can::Tangair_usb2can() 
+Tangair_usb2can::Tangair_usb2can()
 {
 
     USB2CAN0_ = openUSBCAN("/dev/ttyRedDog");
@@ -470,7 +470,7 @@ void Tangair_usb2can::ResetPositionToZero()
     Matrix3x4d kd = Matrix3x4d::Constant(0.1);
 
     SetTargetPosition(pos, kp, kd);
-    CAN_TX_ALL_MOTOR(130);
+    CAN_TX_ALL_MOTOR(120);
 }
 
 std::vector<double> Tangair_usb2can::GetMotorPositions() {
@@ -488,6 +488,51 @@ std::vector<double> Tangair_usb2can::GetMotorTorque() {
     return motor_state_.torque;
 }
 
+void Tangair_usb2can::UpdateMotorState() {
+    motor_state_.position = GetMotorFloatVector("position");
+    motor_state_.velocity = GetMotorFloatVector("velocity");
+    motor_state_.torque   = GetMotorFloatVector("torque");
+}
+
+std::vector<double> Tangair_usb2can::GetMotorFloatVector(const std::string& field) {
+    std::vector<double> result;
+    const std::vector<std::pair<int, int>> motorMap = {
+        {2, 1}, {2, 2}, {2, 3}, {2, 5}, {2, 6}, {2, 7},
+        {1, 1}, {1, 2}, {1, 3}, {1, 5}, {1, 6}, {1, 7}
+    };
+
+    for (const auto& [bus_id, motor_id] : motorMap) {
+        auto& motor = (bus_id == 1 ? USB2CAN0_CAN_Bus_1 : USB2CAN0_CAN_Bus_2);
+        auto& recv = [&]() -> Motor_CAN_Recieve_Struct& {
+            switch (motor_id) {
+                case 1: return motor.ID_1_motor_recieve;
+                case 2: return motor.ID_2_motor_recieve;
+                case 3: return motor.ID_3_motor_recieve;
+                case 5: return motor.ID_5_motor_recieve;
+                case 6: return motor.ID_6_motor_recieve;
+                case 7: return motor.ID_7_motor_recieve;
+                default: throw std::runtime_error("Invalid motor ID");
+            }
+        }();
+
+        float val = 0;
+        if (field == "position") val = recv.current_position_f;
+        else if (field == "velocity") val = recv.current_speed_f;
+        else if (field == "torque") val = recv.current_torque_f;
+        else throw std::invalid_argument("Invalid field: " + field);
+
+        // 特定 motor 做反向處理
+        if ((bus_id == 2 && (motor_id == 2 || motor_id == 3)) ||
+            (bus_id == 1 && (motor_id == 1 || motor_id == 2 || motor_id == 3 || motor_id == 5))) {
+            val *= -1;
+        }
+
+        result.push_back(val);
+    }
+
+    return result;
+}
+
 
 void Tangair_usb2can::CAN_TX_position_thread()
 {
@@ -496,9 +541,9 @@ void Tangair_usb2can::CAN_TX_position_thread()
     auto last_time_tx = high_resolution_clock::now();
     int count_tx = 0;
 
-    ENABLE_ALL_MOTOR(150);
+    ENABLE_ALL_MOTOR(120);
     ResetPositionToZero();
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     while (running_) {
         count_tx++;
@@ -514,79 +559,7 @@ void Tangair_usb2can::CAN_TX_position_thread()
         /********************************* ***TX Finish*** ***********************************************/
 
         std::lock_guard<std::mutex> lock(motor_state_mutex);
-
-        motor_state_.position = {
-            USB2CAN0_CAN_Bus_2.ID_1_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_2.ID_2_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_2.ID_3_motor_recieve.current_position_f,
-            USB2CAN0_CAN_Bus_2.ID_5_motor_recieve.current_position_f,
-            USB2CAN0_CAN_Bus_2.ID_6_motor_recieve.current_position_f,
-            USB2CAN0_CAN_Bus_2.ID_7_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_1.ID_1_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_1.ID_2_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_1.ID_3_motor_recieve.current_position_f,
-            -USB2CAN0_CAN_Bus_1.ID_5_motor_recieve.current_position_f,
-            USB2CAN0_CAN_Bus_1.ID_6_motor_recieve.current_position_f,
-            USB2CAN0_CAN_Bus_1.ID_7_motor_recieve.current_position_f,
-        };
-
-        //     motor_state_.position = {
-        //     USB2CAN0_CAN_Bus_2.ID_1_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_2.ID_2_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_2.ID_3_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_1_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_2_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_3_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_2.ID_5_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_2.ID_6_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_2.ID_7_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_5_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_6_motor_recieve.current_position_f,
-        //     USB2CAN0_CAN_Bus_1.ID_7_motor_recieve.current_position_f,
-        // };
-
-        // std::vector<std::string> motor_names = {
-        //     "B2_ID1", "B2_ID2", "B2_ID3",
-        //     "B1_ID1", "B1_ID2", "B1_ID3",
-        //     "B2_ID5", "B2_ID6", "B2_ID7",
-        //     "B1_ID5", "B1_ID6", "B1_ID7"
-        // };
-
-        // for (size_t i = 0; i < motor_state_.position.size(); ++i) {
-        //     std::cout << motor_names[i] << ": "
-        //             << std::fixed << std::setprecision(3)
-        //             << motor_state_.position[i] << std::endl;
-        // }
-
-        motor_state_.velocity = {
-            USB2CAN0_CAN_Bus_2.ID_1_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_2.ID_2_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_2.ID_3_motor_recieve.current_speed_f,
-            USB2CAN0_CAN_Bus_2.ID_5_motor_recieve.current_speed_f,
-            USB2CAN0_CAN_Bus_2.ID_6_motor_recieve.current_speed_f,
-            USB2CAN0_CAN_Bus_2.ID_7_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_1.ID_1_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_1.ID_2_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_1.ID_3_motor_recieve.current_speed_f,
-            -USB2CAN0_CAN_Bus_1.ID_5_motor_recieve.current_speed_f,
-            USB2CAN0_CAN_Bus_1.ID_6_motor_recieve.current_speed_f,
-            USB2CAN0_CAN_Bus_1.ID_7_motor_recieve.current_speed_f,
-        };
-
-        motor_state_.torque = {
-            USB2CAN0_CAN_Bus_2.ID_1_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_2.ID_2_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_2.ID_3_motor_recieve.current_torque_f,
-            USB2CAN0_CAN_Bus_2.ID_5_motor_recieve.current_torque_f,
-            USB2CAN0_CAN_Bus_2.ID_6_motor_recieve.current_torque_f,
-            USB2CAN0_CAN_Bus_2.ID_7_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_1.ID_1_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_1.ID_2_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_1.ID_3_motor_recieve.current_torque_f,
-            -USB2CAN0_CAN_Bus_1.ID_5_motor_recieve.current_torque_f,
-            USB2CAN0_CAN_Bus_1.ID_6_motor_recieve.current_torque_f,
-            USB2CAN0_CAN_Bus_1.ID_7_motor_recieve.current_torque_f,
-        };
+        UpdateMotorState();
         
         // std::this_thread::sleep_for(std::chrono::milliseconds(1));
         auto now_tx = high_resolution_clock::now();

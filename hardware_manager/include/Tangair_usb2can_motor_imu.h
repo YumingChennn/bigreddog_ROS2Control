@@ -166,6 +166,9 @@ public:
     std::vector<double> GetMotorVelocity();
     std::vector<double> GetMotorTorque();
 
+	void UpdateMotorState();
+    std::vector<double> GetMotorFloatVector(const std::string& field);
+
 	std::thread _CAN_TX_position_thread;
 	void CAN_TX_position_thread();
 	
