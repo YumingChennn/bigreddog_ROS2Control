@@ -3,6 +3,9 @@
 #include <iomanip>
 #include <string>
 #include <cassert>
+#include <deque>
+#include <algorithm>
+#include <vector>
 
 using namespace std;
 
@@ -85,7 +88,6 @@ int init() {
 
     return 0;
 }
-
 int start() {
     if (!device->gotoMeasurement()) {
         cerr << "Failed to enter measurement mode." << endl;
@@ -99,74 +101,82 @@ int start() {
 
     cout << "Recording data for 10 seconds..." << endl;
     int64_t startTime = XsTime::timeStampNow();
-   	while (XsTime::timeStampNow() - startTime <= 10000)
-	{
-		if (callback.packetAvailable())
-		{
-			cout << setw(5) << fixed << setprecision(2);
 
-			// Retrieve a packet
-			XsDataPacket packet = callback.getNextPacket();
+    // ---- 濾波相關變數 ----
+    const int medianWindow = 3;
+    std::deque<XsVector3> gyroHistory;
+    XsVector3 prevSmoothedGyr(0.0, 0.0, 0.0);
+    double alpha = 0.1;
 
-			if (packet.containsCalibratedData())
-			{   
+    std::vector<XsVector3> filteredGyrLog; // 儲存所有濾波後資料
+
+    while (XsTime::timeStampNow() - startTime <= 10000) {
+        if (callback.packetAvailable()) {
+            XsDataPacket packet = callback.getNextPacket();
+
+            if (packet.containsCalibratedData()) {
                 sensorData.acc = packet.calibratedAcceleration();
-                sensorData.gyr = packet.calibratedGyroscopeData();
+                XsVector3 gyroscope = packet.calibratedGyroscopeData();
                 sensorData.mag = packet.calibratedMagneticField();
-                // cout << "\r"
-				    // << "Acc X:" << sensorData.acc[0]
-					// << ", Acc Y:" << sensorData.acc[1]
-					// << ", Acc Z:" << sensorData.acc[2];
 
-                cout << "\r"
-				    << " |Gyr X:" << sensorData.gyr[0]
-					<< ", Gyr Y:" << sensorData.gyr[1]
-					<< ", Gyr Z:" << sensorData.gyr[2];
+                // === Step 1: Median Filter ===
+                gyroHistory.push_back(gyroscope);
+                if (gyroHistory.size() > medianWindow)
+                    gyroHistory.pop_front();
 
-				// cout << " |Mag X:" << sensorData.mag[0]
-				// 	<< ", Mag Y:" << sensorData.mag[1]
-				// 	<< ", Mag Z:" << sensorData.mag[2];
-			}
+                // 若長度不足 medianWindow，跳過本次處理
+                if (gyroHistory.size() < medianWindow)
+                    continue;
 
-			if (packet.containsOrientation())
-			{
-				sensorData.quat = packet.orientationQuaternion();
+                XsVector3 medianGyr = gyroscope;
+                for (int i = 0; i < 3; ++i) {
+                    std::vector<double> axis_vals;
+                    for (const auto& v : gyroHistory)
+                        axis_vals.push_back(v[i]);
+                    std::sort(axis_vals.begin(), axis_vals.end());
+                    medianGyr[i] = axis_vals[medianWindow / 2];
+                }
+
+                // === Step 2: Exponential Moving Average ===
+                XsVector3 smoothedGyr;
+                if (filteredGyrLog.empty()) {
+                    smoothedGyr = medianGyr;  // 第一筆直接採用
+                } else {
+                    for (int i = 0; i < 3; ++i) {
+                        smoothedGyr[i] = alpha * medianGyr[i] + (1 - alpha) * prevSmoothedGyr[i];
+                    }
+                }
+
+                prevSmoothedGyr = smoothedGyr;
+                sensorData.gyr = smoothedGyr;
+
+                // 存入 log vector
+                filteredGyrLog.push_back(smoothedGyr);
+            }
+
+            // 可選擇是否保留其他資訊處理
+            if (packet.containsOrientation()) {
+                sensorData.quat = packet.orientationQuaternion();
                 sensorData.euler = packet.orientationEuler();
-				// cout << "q0:" << sensorData.quat.w()
-				// 	<< ", q1:" << sensorData.quat.x()
-				// 	<< ", q2:" << sensorData.quat.y()
-				// 	<< ", q3:" << sensorData.quat.z();
+            }
 
-				// cout << " |Roll:" << sensorData.euler.roll()
-				// 	<< ", Pitch:" << sensorData.euler.pitch()
-				// 	<< ", Yaw:" << sensorData.euler.yaw();
-			}
+            if (packet.containsLatitudeLongitude()) {
+                sensorData.latlon = packet.latitudeLongitude();
+            }
 
-			if (packet.containsLatitudeLongitude())
-			{
-				sensorData.latlon = packet.latitudeLongitude();
-				// cout << " |Lat:" << sensorData.latlon[0]
-				// 	<< ", Lon:" << sensorData.latlon[1];
-			}
-
-			if (packet.containsAltitude())
+            if (packet.containsAltitude()) {
                 sensorData.altitude = packet.altitude();
-				// cout << " |Alt:" << sensorData.altitude;
+            }
 
-			if (packet.containsVelocity())
-			{   
+            if (packet.containsVelocity()) {
                 sensorData.velocity = packet.velocity(XDI_CoordSysEnu);
-				// cout << " |E:" << sensorData.velocity[0]
-				// 	<< ", N:" << sensorData.velocity[1]
-				// 	<< ", U:" << sensorData.velocity[2];
-			}
+            }
 
-			cout << flush;
-		}
-		XsTime::msleep(0);
-	}
-    cout << "\n" << string(79, '-') << "\n";
-    cout << endl;
+            cout << flush;
+        }
+        XsTime::msleep(0);
+    }
+
     return 0;
 }
 

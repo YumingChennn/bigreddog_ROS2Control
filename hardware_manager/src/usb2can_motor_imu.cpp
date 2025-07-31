@@ -16,7 +16,6 @@
 #include <cassert>
 
 #include <yaml-cpp/yaml.h>
-#include "config_loader.h"
 
 using namespace std::chrono;
 using namespace std;
@@ -84,7 +83,7 @@ int Tangair_usb2can::IMU_Init()
         cerr << "No MTi device found. Aborting." << endl;
         return -1;
     }
-
+    
     cout << "Found device @ port: " << mtPort.portName().toStdString() << endl;
 
     if (!control->openPort(mtPort.portName().toStdString(), mtPort.baudrate())) {
@@ -114,7 +113,7 @@ int Tangair_usb2can::IMU_Init()
     } else if (device->deviceId().isVru() || device->deviceId().isAhrs()) {
         configArray.push_back(XsOutputConfiguration(XDI_Quaternion, 100));
         configArray.push_back(XsOutputConfiguration(XDI_Acceleration, 100));
-        configArray.push_back(XsOutputConfiguration(XDI_RateOfTurn, 100));
+        configArray.push_back(XsOutputConfiguration(XDI_RateOfTurnHR, 1000));
         configArray.push_back(XsOutputConfiguration(XDI_MagneticField, 100));
     } else if (device->deviceId().isGnss()) {
         configArray.push_back(XsOutputConfiguration(XDI_Quaternion, 100));
@@ -154,29 +153,28 @@ void Tangair_usb2can::startThreadedMeasurement()
         return;
     }
 
+    // === 加入計時與計數器 ===
+    int packetCount = 0;
+    int64_t lastPrintTime = XsTime::timeStampNow();
+
     while (imu_running_) // 不再限制時間，只依照 imu_running_ 控制
-    {
-        if (callback.packetAvailable())
+    {   
+        if (callback.packetAvailable()) 
         {
             XsDataPacket packet = callback.getNextPacket();
             cout << setw(5) << fixed << setprecision(2);
-            if (packet.containsCalibratedData())
-            {   
+            if (packet.containsCalibratedData()) {
                 sensorData.acc = packet.calibratedAcceleration();
                 sensorData.gyr = packet.calibratedGyroscopeData();
                 sensorData.mag = packet.calibratedMagneticField();
-                // cout << " Acc1 " << endl;
-				// cout << "Acc X:" << sensorData.acc[0]
-				// 	<< ", Acc Y:" << sensorData.acc[1]
-				// 	<< ", Acc Z:" << sensorData.acc[2];
+            }
 
-				// cout << " |Gyr X:" << sensorData.gyr[0]
+            if (packet.containsRateOfTurnHR()) {
+                sensorData.gyr = packet.rateOfTurnHR();
+
+                // cout << " |Gyr X:" << sensorData.gyr[0]
 				// 	<< ", Gyr Y:" << sensorData.gyr[1]
-				// 	<< ", Gyr Z:" << sensorData.gyr[2];
-
-				// cout << " |Mag X:" << sensorData.mag[0]
-				// 	<< ", Mag Y:" << sensorData.mag[1]
-				// 	<< ", Mag Z:" << sensorData.mag[2];
+				// 	<< ", Gyr Z:" << sensorData.gyr[2] << endl;
             }
 
             if (packet.containsOrientation())
@@ -212,7 +210,15 @@ void Tangair_usb2can::startThreadedMeasurement()
                 //      << ", N:" << sensorData.velocity[1]
                 //      << ", U:" << sensorData.velocity[2];
             }
-
+            
+            packetCount++;
+            int64_t now = XsTime::timeStampNow();
+            if (now - lastPrintTime >= 1000) {  // 每秒顯示一次
+                // cout << "\r[INFO] IMU packet rate: " << packetCount << " Hz" << flush;
+                packetCount = 0;
+                lastPrintTime = now;
+            }
+            cout << flush;
         }
 
         XsTime::msleep(1);  // 避免 CPU 過度負載
@@ -255,7 +261,7 @@ void Tangair_usb2can::DDS_Init()
 
     /*loop publishing thread*/
     lowStatePuberThreadPtr = CreateRecurrentThreadEx("lowstate", UT_CPU_ID_NONE, 2000, &Tangair_usb2can::PublishLowState, this);
-    std::cout << "[DEBUG] "<< std::endl;
+    // std::cout << "[DEBUG] "<< std::endl;
 }
 
 void Tangair_usb2can::LowCmdMessageHandler(const void *msg)
@@ -300,10 +306,14 @@ void Tangair_usb2can::LowCmdMessageHandler(const void *msg)
 
 void Tangair_usb2can::PublishLowState()
 {   
+    // std::cout << "[DEBUG] PublishLowState() called!" << std::endl;
     std::vector<double> pos = GetMotorPositions();
     std::vector<double> vel = GetMotorVelocity();
 
     if ((int)pos.size() < num_motor_ || (int)vel.size() < num_motor_) {
+        std::cerr << "Please make sure match the start pos.\n";
+        motor_state_.position = {0.0, 1.6, -2.8, -0.0, 1.6, -2.8, -0.0, -1.6, 2.8, 0.0, -1.6, 2.8};
+        motor_state_.velocity = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         return;
     }
 
@@ -313,6 +323,8 @@ void Tangair_usb2can::PublishLowState()
         low_state_go_.motor_state()[i].q() = pos[i];
         low_state_go_.motor_state()[i].dq() = vel[i];
         low_state_go_.motor_state()[i].tau_est() = 0;
+        
+        // std::cout << "[Motor " << i << "] Position (q): " << pos[i] << std::endl;
     }
 
     // std::cout << "[CHECK] motor_state size = " << low_state_go_.motor_state().size() << std::endl;
@@ -331,12 +343,19 @@ void Tangair_usb2can::PublishLowState()
 
 /*********************************       *** Main control related ***      ***********************************************/
 
+void Tangair_usb2can::StartReadLoop() {
+    if (running_) return;
+    running_ = true;
+
+    _CAN_RX_device_0_thread = std::thread(&Tangair_usb2can::CAN_RX_device_0_thread, this);
+}
+
 void Tangair_usb2can::StartPositionLoop() {
     if (running_) return;
     running_ = true;
-    
-    _CAN_TX_position_thread = std::thread(&Tangair_usb2can::CAN_TX_position_thread, this);
+
     _CAN_RX_device_0_thread = std::thread(&Tangair_usb2can::CAN_RX_device_0_thread, this);
+    _CAN_TX_position_thread = std::thread(&Tangair_usb2can::CAN_TX_position_thread, this);
 }
 
 void Tangair_usb2can::StopAllThreads() {
@@ -345,8 +364,8 @@ void Tangair_usb2can::StopAllThreads() {
     
     IMU_Shutdown();
 
-    if (_CAN_TX_position_thread.joinable()) _CAN_TX_position_thread.join();
     if (_CAN_RX_device_0_thread.joinable()) _CAN_RX_device_0_thread.join();
+    if (_CAN_TX_position_thread.joinable()) _CAN_TX_position_thread.join();
 
     DISABLE_ALL_MOTOR(237);
     std::cout << "[Tangair] 所有執行緒已安全停止。\n";
@@ -371,12 +390,19 @@ bool Tangair_usb2can::LoadConfigFromYAML(const std::string& filepath) {
         control_limits_.kd_max = ctrl["kd_max"].as<double>();
 
         auto joints = config["joint_limits"];
-        joint_limits_.hip.min = joints["hip"]["min"].as<double>();
-        joint_limits_.hip.max = joints["hip"]["max"].as<double>();
-        joint_limits_.thigh.min = joints["thigh"]["min"].as<double>();
-        joint_limits_.thigh.max = joints["thigh"]["max"].as<double>();
-        joint_limits_.calf.min = joints["calf"]["min"].as<double>();
-        joint_limits_.calf.max = joints["calf"]["max"].as<double>();
+        std::vector<std::string> legs = { "FR", "FL", "RR", "RL" };
+
+        for (const auto& leg : legs) {
+            JointLimits limits;
+            limits.hip.min   = joints[leg]["hip"]["min"].as<double>();
+            limits.hip.max   = joints[leg]["hip"]["max"].as<double>();
+            limits.thigh.min = joints[leg]["thigh"]["min"].as<double>();
+            limits.thigh.max = joints[leg]["thigh"]["max"].as<double>();
+            limits.calf.min  = joints[leg]["calf"]["min"].as<double>();
+            limits.calf.max  = joints[leg]["calf"]["max"].as<double>();
+
+            joint_limits_per_leg_[leg] = limits;
+        }
 
         return true;
     } catch (const std::exception& e) {
@@ -388,43 +414,50 @@ bool Tangair_usb2can::LoadConfigFromYAML(const std::string& filepath) {
 bool Tangair_usb2can::CheckPositionAndGainValidity(const Matrix3x4d& positions, 
                                                    const Matrix3x4d& kp_array, 
                                                    const Matrix3x4d& kd_array) {
-    for (int row = 0; row < 3; ++row) {
+    const std::array<std::string, 4> leg_names = { "FR", "FL", "RR", "RL" };
+
+    for (int row = 0; row < 3; ++row) {  // 0: calf, 1: thigh, 2: hip
         for (int col = 0; col < 4; ++col) {
             double pos = positions(row, col);
-            double kp = kp_array(row, col);
-            double kd = kd_array(row, col);
+            double kp  = kp_array(row, col);
+            double kd  = kd_array(row, col);
+
+            const auto& leg_name = leg_names[col];
+            const auto& joint_limit = joint_limits_per_leg_.at(leg_name);
 
             double pos_min, pos_max;
+
             if (row == 2) { // hip
-                pos_min = joint_limits_.hip.min;
-                pos_max = joint_limits_.hip.max;
+                pos_min = joint_limit.hip.min;
+                pos_max = joint_limit.hip.max;
             } else if (row == 1) { // thigh
-                pos_min = joint_limits_.thigh.min;
-                pos_max = joint_limits_.thigh.max;
+                pos_min = joint_limit.thigh.min;
+                pos_max = joint_limit.thigh.max;
             } else { // calf
-                pos_min = joint_limits_.calf.min;
-                pos_max = joint_limits_.calf.max;
+                pos_min = joint_limit.calf.min;
+                pos_max = joint_limit.calf.max;
             }
 
             if (!std::isfinite(pos) || pos < pos_min || pos > pos_max) {
                 std::cerr << "[ERROR] Invalid position (" << pos << ") at [" << row << ", " << col
-                          << "], limit: [" << pos_min << ", " << pos_max << "]\n";
+                          << "] (" << leg_name << "), limit: [" << pos_min << ", " << pos_max << "]\n";
                 return false;
             }
 
             if (!std::isfinite(kp) || kp < control_limits_.kp_min || kp > control_limits_.kp_max) {
                 std::cerr << "[ERROR] Invalid kp (" << kp << ") at [" << row << ", " << col
-                          << "], limit: [" << control_limits_.kp_min << ", " << control_limits_.kp_max << "]\n";
+                          << "] (" << leg_name << "), limit: [" << control_limits_.kp_min << ", " << control_limits_.kp_max << "]\n";
                 return false;
             }
 
             if (!std::isfinite(kd) || kd < control_limits_.kd_min || kd > control_limits_.kd_max) {
                 std::cerr << "[ERROR] Invalid kd (" << kd << ") at [" << row << ", " << col
-                          << "], limit: [" << control_limits_.kd_min << ", " << control_limits_.kd_max << "]\n";
+                          << "] (" << leg_name << "), limit: [" << control_limits_.kd_min << ", " << control_limits_.kd_max << "]\n";
                 return false;
             }
         }
     }
+
     return true;
 }
 
@@ -460,14 +493,14 @@ void Tangair_usb2can::SetTargetPosition(const Matrix3x4d &positions,
 void Tangair_usb2can::ResetPositionToZero()
 {   
     Matrix3x4d pos;
-    pos <<  3.0, -3.0, -3.0,  3.0,
-            -1.57,  1.57,  1.57, -1.57,
+    pos <<  2.8, -2.8, -2.8,  2.8,
+            -1.6,  1.6,  1.6, -1.6,
             0.0,  0.0,  0.0,  0.0;
 
     // std::cout << "Target Position (pos):\n" << pos(2, 0) << std::endl;
 
-    Matrix3x4d kp = Matrix3x4d::Constant(3.0);
-    Matrix3x4d kd = Matrix3x4d::Constant(0.1);
+    Matrix3x4d kp = Matrix3x4d::Constant(10.0);
+    Matrix3x4d kd = Matrix3x4d::Constant(0.2);
 
     SetTargetPosition(pos, kp, kd);
     CAN_TX_ALL_MOTOR(120);
@@ -542,7 +575,7 @@ void Tangair_usb2can::CAN_TX_position_thread()
     int count_tx = 0;
 
     ENABLE_ALL_MOTOR(120);
-    ResetPositionToZero();
+    
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     while (running_) {
@@ -600,49 +633,58 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
 			CAN_DEV0_RX.current_torque = ((data_rx[4]&0xF)<<8)|data_rx[5]; //电机扭矩数据
 			CAN_DEV0_RX.current_temp_MOS  = data_rx[6];
             CAN_DEV0_RX.current_temp_Rotor  = data_rx[7];
-            // 转换
-            CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
-            CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
-            CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (T_MIN), (T_MAX), 12);
   
             if (channel == 1) // 模块0，can1
             {
                 switch (info_rx.canID)
                 {
                 case 0X11:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_1_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_1_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_1_motor_recieve = CAN_DEV0_RX;
                    
                     break;
                 }
                 case 0X12:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_2_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_2_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_2_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X13:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_3_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_3_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_3_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X15:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_5_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_5_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_5_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X16:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_6_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_6_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_6_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X17:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_1.ID_7_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_1.ID_7_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_1.ID_7_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 default:
@@ -654,39 +696,51 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
                 switch (info_rx.canID)
                 {
                 case 0X11:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_1_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_1_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_1_motor_recieve = CAN_DEV0_RX;
-                  
                     break;
                 }
                 case 0X12:
                 {
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_2_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_2_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_2_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X13:
                 {
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_3_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_3_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_3_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X15:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_5_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_5_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_5_motor_recieve = CAN_DEV0_RX;
-                  
                     break;
                 }
                 case 0X16:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_6_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_6_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_6_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                 case 0X17:
-                {
+                {   
+                    CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+                    CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 12);    
+                    CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (USB2CAN0_CAN_Bus_2.ID_7_motor_send.Tau_Min), (USB2CAN0_CAN_Bus_2.ID_7_motor_send.Tau_Max), 12);
                     USB2CAN0_CAN_Bus_2.ID_7_motor_recieve = CAN_DEV0_RX;
-                   
                     break;
                 }
                
@@ -706,7 +760,6 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
     std::cout << "CAN_RX_device_0_thread  Exit~~" << std::endl;
 }
 
-
 /*****************************************************************************************************/
 /*********************************       ***电机相关***      ***********************************************/
 /*****************************************************************************************************/
@@ -714,16 +767,28 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
 void Tangair_usb2can::USB2CAN_CAN_Bus_inti_set(USB2CAN_CAN_Bus_Struct *CAN_Bus)
 {
     CAN_Bus->ID_1_motor_send.id = 0X01;
+    CAN_Bus->ID_1_motor_send.Tau_Min = T_MIN_8006;
+    CAN_Bus->ID_1_motor_send.Tau_Max = T_MAX_8006;
 
     CAN_Bus->ID_2_motor_send.id = 0X02;
+    CAN_Bus->ID_2_motor_send.Tau_Min = T_MIN_8006;
+    CAN_Bus->ID_2_motor_send.Tau_Max = T_MAX_8006;
 
     CAN_Bus->ID_3_motor_send.id = 0X03;
+    CAN_Bus->ID_3_motor_send.Tau_Min = T_MIN_8009;
+    CAN_Bus->ID_3_motor_send.Tau_Max = T_MAX_8009;
 
     CAN_Bus->ID_5_motor_send.id = 0X05;
+    CAN_Bus->ID_5_motor_send.Tau_Min = T_MIN_8006;
+    CAN_Bus->ID_5_motor_send.Tau_Max = T_MAX_8006;
 
     CAN_Bus->ID_6_motor_send.id = 0X06;
+    CAN_Bus->ID_6_motor_send.Tau_Min = T_MIN_8006;
+    CAN_Bus->ID_6_motor_send.Tau_Max = T_MAX_8006;
 
     CAN_Bus->ID_7_motor_send.id = 0X07;
+    CAN_Bus->ID_7_motor_send.Tau_Min = T_MIN_8009;
+    CAN_Bus->ID_7_motor_send.Tau_Max = T_MAX_8009;
 }
 
 void Tangair_usb2can::USB2CAN_CAN_Bus_Init()
@@ -751,7 +816,6 @@ void Tangair_usb2can::Motor_Enable(int32_t dev, uint8_t channel, Motor_CAN_Send_
     Data_CAN[7] = 0xFC;
 
     int ret = sendUSBCAN(dev, channel, &txMsg_CAN, Data_CAN);
-    // printf("[DEBUG] sendUSBCAN return value: %d\n", ret);
 }
 
 /// @brief 电机失能
@@ -798,7 +862,7 @@ void Tangair_usb2can::Motor_Zore(int32_t dev, uint8_t channel, Motor_CAN_Send_St
 /// @param dev 模块设备号
 /// @param channel can1或者can2
 /// @param Motor_Data 电机数据
-void Tangair_usb2can::CAN_Send_Control(int32_t dev, uint8_t channel, Motor_CAN_Send_Struct *Motor_Data) // 运控�??,CAN1=CAN_TX_MAILBOX0,CAN2=CAN_TX_MAILBOX1
+void Tangair_usb2can::CAN_Send_Control(int32_t dev, uint8_t channel, Motor_CAN_Send_Struct *Motor_Data) 
 {
     // 运控模式专用的局部变
     FrameInfo txMsg_Control = {
@@ -817,8 +881,8 @@ void Tangair_usb2can::CAN_Send_Control(int32_t dev, uint8_t channel, Motor_CAN_S
         else if(Motor_Data->position<P_MIN) Motor_Data->position=P_MIN;
     if(Motor_Data->speed>V_MAX)	Motor_Data->speed=V_MAX;
         else if(Motor_Data->speed<V_MIN) Motor_Data->speed=V_MIN;
-    if(Motor_Data->torque>T_MAX)	Motor_Data->torque=T_MAX;
-        else if(Motor_Data->torque<T_MIN) Motor_Data->torque=T_MIN;
+    if(Motor_Data->torque>Motor_Data->Tau_Max)	Motor_Data->torque=Motor_Data->Tau_Max;
+        else if(Motor_Data->torque<Motor_Data->Tau_Min) Motor_Data->torque=Motor_Data->Tau_Min;
 
     Data_CAN_Control[0] = float_to_uint(Motor_Data->position, P_MIN, P_MAX, 16)>>8; //位置�?? 8
     Data_CAN_Control[1] = float_to_uint(Motor_Data->position, P_MIN, P_MAX, 16)&0xFF; //位置�?? 8
@@ -826,8 +890,8 @@ void Tangair_usb2can::CAN_Send_Control(int32_t dev, uint8_t channel, Motor_CAN_S
     Data_CAN_Control[3] = ((float_to_uint(Motor_Data->speed, V_MIN, V_MAX, 12)&0xF)<<4)|(float_to_uint(Motor_Data->kp, KP_MIN, KP_MAX, 12)>>8); //速度�?? 4 �?? KP �?? 4 �??
     Data_CAN_Control[4] = float_to_uint(Motor_Data->kp, KP_MIN, KP_MAX, 12)&0xFF; //KP �?? 8 �??
     Data_CAN_Control[5] = float_to_uint(Motor_Data->kd, KD_MIN, KD_MAX, 12)>>4; //Kd �?? 8 �??
-    Data_CAN_Control[6] = ((float_to_uint(Motor_Data->kd, KD_MIN, KD_MAX, 12)&0xF)<<4)|(float_to_uint(Motor_Data->torque, T_MIN, T_MAX, 12)>>8); //KP �?? 4 位扭矩高 4 �??
-    Data_CAN_Control[7] = float_to_uint(Motor_Data->torque, T_MIN, T_MAX, 12)&0xFF; //扭矩�?? 8
+    Data_CAN_Control[6] = ((float_to_uint(Motor_Data->kd, KD_MIN, KD_MAX, 12)&0xF)<<4)|(float_to_uint(Motor_Data->torque, Motor_Data->Tau_Min, Motor_Data->Tau_Max, 12)>>8); //KP �?? 4 位扭矩高 4 �??
+    Data_CAN_Control[7] = float_to_uint(Motor_Data->torque, Motor_Data->Tau_Min, Motor_Data->Tau_Max, 12)&0xFF; //扭矩�?? 8
 
     int ret = sendUSBCAN(dev, channel, &txMsg_Control, Data_CAN_Control);
 }
@@ -935,41 +999,41 @@ void Tangair_usb2can::ZERO_ALL_MOTOR(int delay_us)
     // FRH
     Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_1_motor_send);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RRH
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_1_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // FLH
-    Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_5_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RLH
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_5_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RRH
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_1_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // FLH
+    // Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_5_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RLH
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_5_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     // FRT
     Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_2_motor_send);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RRT
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_2_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // FLT
-    Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_6_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RLT
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_6_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RRT
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_2_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // FLT
+    // Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_6_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RLT
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_6_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     // FRC
     Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_3_motor_send);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RRC
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_3_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // FLC
-    Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_7_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-    // RLC
-    Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_7_motor_send);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RRC
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_3_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // FLC
+    // Motor_Zore(USB2CAN0_, 2, &USB2CAN0_CAN_Bus_2.ID_7_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    // // RLC
+    // Motor_Zore(USB2CAN0_, 1, &USB2CAN0_CAN_Bus_1.ID_7_motor_send);
+    // std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
 void Tangair_usb2can::PASSIVE_ALL_MOTOR(int delay_us)

@@ -59,13 +59,15 @@ int float_to_uint(float x, float x_min, float x_max, int bits);
 				// {12.5,45,10},    // DMH6215
 				// {12.5,45,10}     // DMG6220
 
-// 达妙电机,此处为DM10010L参数
+// 达妙电机,此处为DM8006参数
 #define P_MIN -12.5f
 #define P_MAX 12.5f
 #define V_MIN -45.0f
 #define V_MAX 45.0f
-#define T_MIN -40.0f
-#define T_MAX 40.0f
+#define T_MIN_8006 -40.0f
+#define T_MAX_8006 40.0f
+#define T_MIN_8009 -54.0f
+#define T_MAX_8009 54.0f
 #define KP_MIN 0.0f
 #define KP_MAX 500.0f
 #define KD_MIN 0.0f
@@ -93,8 +95,8 @@ typedef struct
 	float torque;
 
 	//位置限制
-	float max_position;
-	float min_position;
+	float Tau_Min;
+	float Tau_Max;
 
 } Motor_CAN_Send_Struct;
 
@@ -147,6 +149,7 @@ public:
 	void PublishLowState();
 
 	// Main control
+	void StartReadLoop();
 	void StartPositionLoop();
 	void StopAllThreads();
 	
@@ -224,10 +227,10 @@ private:
 	int num_motor_ = 12; // ex: 12
 
 	struct MotorState {
-        std::vector<double> position;
-        std::vector<double> velocity;
-        std::vector<double> torque;
-    };
+		std::vector<double> position;
+		std::vector<double> velocity;  // 20個 0
+		std::vector<double> torque;
+	};
 
     MotorState motor_state_;         
     std::mutex motor_state_mutex;    
@@ -247,7 +250,7 @@ private:
     /*LowCmd write thread*/
     ThreadPtr lowStatePuberThreadPtr;
     ControlLimits control_limits_;
-    JointLimits joint_limits_;
+    LegJointLimitsMap joint_limits_per_leg_;  // ✅ 這一行最重要
 };
 
 #endif

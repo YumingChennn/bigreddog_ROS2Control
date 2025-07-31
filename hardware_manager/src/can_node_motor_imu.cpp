@@ -43,11 +43,12 @@ int main(int argc, const char **argv) {
 
     constexpr int kDefaultDelayUs = 120;
 
-    CAN_ptr->DDS_Init();
     CAN_ptr->IMU_Init();
     CAN_ptr->StartIMUThread();
+
+    CAN_ptr->DDS_Init();
     
-    CAN_ptr->LoadConfigFromYAML("/home/crazydogv2/test/bigreddog_ROS2Control/hardware_manager/config/config.yaml");
+    CAN_ptr->LoadConfigFromYAML("/home/crazydog/bigrdog/bigreddog_ROS2Control/hardware_manager/config/config.yaml");
 
 
     std::unordered_map<std::string, std::function<void()>> command_map = {
