@@ -100,7 +100,7 @@ make -j4
 ### ROS2_control
 open a new terminal.
 ```
-source src/setup/setup_ports.sh
+source setup/setup_ports.sh
 ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
 ```
 
