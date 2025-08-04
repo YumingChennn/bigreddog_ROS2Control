@@ -33,8 +33,8 @@ Please use the C++ download method in the xsens mti's website.
 
 ### 2. Compile 
 ```
-mkdir build
-cd build
+cd bigreddog_ROS2Control/hardware_manager
+mkdir build && cd build
 cmake ..
 make -j4
 ./can_node_motor_imu
@@ -81,6 +81,7 @@ source install/setup.bash
 ```
 
 ```
+cd ~/ros2_ws
 source install/setup.bash
 ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
 ```
@@ -89,8 +90,8 @@ ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddo
 ### Hardware Manager
 
 ```
-mkdir build
-cd build
+cd bigreddog_ROS2Control/hardware_manager
+mkdir build && cd build
 cmake ..
 make -j4
 ./can_node_motor_imu
@@ -100,6 +101,7 @@ make -j4
 ### ROS2_control
 open a new terminal.
 ```
+cd ~/ros2_ws
 source install/setup.bash
 ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
 ```
