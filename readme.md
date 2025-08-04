@@ -14,8 +14,8 @@ This repository provides ROS 2 control integration for the **Big Reddog** quadru
 ### Reddog ROS 2 Control Implementation
 - **Source**: [luoluoluoouo/reddog_ROS2Control](https://github.com/luoluoluoouo/reddog_ROS2Control)
 
-### csl_mujoco
-- **Source**: [morrisx28/csl_mujoco](https://github.com/morrisx28/csl_mujoco)
+### csl_ros2_control
+- **Source**: [morrisx28/csl_ros2_control](https://github.com/morrisx28/csl_ros2_control)
 
 
 
@@ -59,9 +59,9 @@ make -j4
 ## ROS2 control
 ### 1. Dependencies
 ```
-git clone https://github.com/morrisx28/csl_mujoco.git
+git clone https://github.com/morrisx28/csl_ros2_control
 ```
-Follow install guide ref [morrisx28/csl_mujoco](https://github.com/morrisx28/csl_mujoco)
+Follow install guide ref [morrisx28/csl_ros2_control](https://github.com/morrisx28/csl_ros2_control)
 
 ### 2. Adjust config
 ```
