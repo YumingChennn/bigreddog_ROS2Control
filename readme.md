@@ -1,6 +1,6 @@
-# Reddog ROS 2 Control
+# Big Reddog ROS 2 Control
 
-This repository provides ROS 2 control integration for the **Reddog** quadruped robot. It integrates simulation and hardware support based on several existing open-source projects.
+This repository provides ROS 2 control integration for the **Big Reddog** quadruped robot. It integrates simulation and hardware support based on several existing open-source projects.
 
 ## References
 
@@ -8,17 +8,22 @@ This repository provides ROS 2 control integration for the **Reddog** quadruped 
 - **Source**: [legubiao/quadruped_ros2_control](https://github.com/legubiao/quadruped_ros2_control)  
 - **Path**: `hardwares/hardware_unitree_mujoco`
 
-### XSens MTi Driver for ROS 2
-- **Source**: [DEMCON/ros2_xsens_mti_driver](https://github.com/DEMCON/ros2_xsens_mti_driver)  
-- **Path**: `libraries/ros2_xsens_mti_driver`
-
-### XSens MTi Driver for ROS 2
+### XSens MTi Driver
 - **Source**: xsens mti's website
 
 ### Reddog ROS 2 Control Implementation
 - **Source**: [luoluoluoouo/reddog_ROS2Control](https://github.com/luoluoluoouo/reddog_ROS2Control)
 
-## Installation Guide 
+### csl_mujoco
+- **Source**: [morrisx28/csl_mujoco](https://github.com/morrisx28/csl_mujoco)
+
+
+
+## Hardware Manager
+### 1. Dependencies
+```
+git clone https://github.com/YumingChennn/bigreddog_ROS2Control.git
+```
 
 Follow install guide ref [unitree_sdk2](https://github.com/unitreerobotics/unitree_sdk2)
 
@@ -26,12 +31,7 @@ Follow install guideline in SOULDE Studio USB2CAN manual (hardware_manager/lib/D
 
 Please use the C++ download method in the xsens mti's website.
 
-## Quick start
-```
-git clone https://github.com/YumingChennn/reddog_ROS2Control.git
-```
-
-### Hardware Manager
+### 2. Compile 
 ```
 mkdir build
 cd build
@@ -39,6 +39,8 @@ cmake ..
 make -j4
 ./can_node_motor_imu
 ```
+> Please make sure your feet are properly placed on the ground before starting the program.
+
 ### Functionality of Each Command
 
 | Command     | Functionality |
@@ -52,9 +54,16 @@ make -j4
 | `"stop"`    | Stops all threads (terminates current motor actions). |
 | `"exit"`    | Stops all threads and exits the program safely. |
 
-> Please set to 'reset' mode before you set to 'position' mode
+> You can use 'reset' mode to make sure the code is no problem.
 
-### ROS2 control
+## ROS2 control
+### 1. Dependencies
+```
+git clone https://github.com/morrisx28/csl_mujoco.git
+```
+Follow install guide ref [morrisx28/csl_mujoco](https://github.com/morrisx28/csl_mujoco)
+
+### 2. Adjust config
 ```
 open descriptions/reddog_description/config/robot_control.yaml
 ```
@@ -66,26 +75,41 @@ config_path: /your/absolute/path/to/reddog_description/config/legged_gym/reddog_
 
 And build/source/launch
 ```
-cd ~/ros2_control
+cd ~/ros2_ws
 colcon build
 source install/setup.bash
 ```
 
 ```
 source src/setup/setup_ports.sh
-ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=reddog_description
+ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
 ```
 
-Hardware Manager
-
-To build and run the CAN node for motor and IMU communication:
+## How to use
+### Hardware Manager
 
 ```
-cd ~/reddog_ws/hardware_manager/build
+mkdir build
+cd build
 cmake ..
-make
-sudo ./can_node_motor_imu
+make -j4
+./can_node_motor_imu
 ```
+> Please make sure your feet are properly placed on the ground before starting the program.
+
+### ROS2_control
+open a new terminal.
+```
+source src/setup/setup_ports.sh
+ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
+```
+
+### Hardware Manager
+choose position mode to get the target position from the DDS.
+```
+position
+```
+
 
 Change the mode of controller to move
 ```
