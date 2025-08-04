@@ -81,7 +81,7 @@ source install/setup.bash
 ```
 
 ```
-source src/setup/setup_ports.sh
+source install/setup.bash
 ros2 launch rl_quadruped_controller bringup.launch.py pkg_description:=big_reddog_description
 ```
 
